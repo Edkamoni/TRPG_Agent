@@ -10,7 +10,7 @@
 
 ## 简介
 
-TRPG Agent 是一个基于大模型的本地文字 TRPG Agent。项目使用 FastAPI + Jinja2 + Vanilla JS 构建网页界面，通过 SSE `/api/chat/stream` 流式返回 AI 叙事，并使用 `saves/` 下的 JSON 文件保存本地存档。
+11111111111TRPG Agent 是一个基于大模型的本地文字 TRPG Agent。项目使用 FastAPI + Jinja2 + Vanilla JS 构建网页界面，通过 SSE `/api/chat/stream` 流式返回 AI 叙事，并使用 `saves/` 下的 JSON 文件保存本地存档。
 
 LLM 调用层使用 **LangChain** 的 `ChatOpenAI`，通过智谱 AI 的 OpenAI 兼容端点访问 GLM 系列模型，并使用 Pydantic 的 `GameAction` 结构化输出代替传统的标签解析，让 AI 的叙事与游戏机制更稳定地解耦。
 
