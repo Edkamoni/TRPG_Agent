@@ -404,6 +404,14 @@ async def api_chat_stream(body: ChatStreamBody, request: Request):
                     pass
 
             action = engine.last_game_action
+
+            # Scene change detection (after streaming, before check/actions)
+            if action and action.scene and action.scene.strip() != engine.character.current_scene:
+                yield _sse("scene_change", {
+                    "scene": action.scene,
+                    "summary": action.scene_summary or "",
+                })
+
             if action and action.check:
                 engine.set_pending_check(action.check.attribute, action.check.dc)
                 yield _sse("check_request", {
@@ -523,6 +531,7 @@ MODEL_FIELD_BOUNDS = {
 RULES_FIELD_BOUNDS = {
     "initial_attribute_points": (0, 60),
     "exp_threshold": (10, 1000),
+    "scene_turn_limit": (5, 30),
 }
 
 
@@ -554,6 +563,7 @@ class ModelTestRequest(BaseModel):
 class RulesConfigUpdate(BaseModel):
     initial_attribute_points: Optional[int] = None
     exp_threshold: Optional[int] = None
+    scene_turn_limit: Optional[int] = None
     persist_to_env: bool = False
 
 
@@ -708,6 +718,7 @@ async def get_rules_settings():
     return {
         "initial_attribute_points": Config.INITIAL_ATTRIBUTE_POINTS,
         "exp_threshold": Config.EXP_THRESHOLD,
+        "scene_turn_limit": Config.SCENE_TURN_LIMIT,
         "bounds": RULES_FIELD_BOUNDS,
         "env_file_path": str(ENV_PATH),
     }
@@ -716,7 +727,7 @@ async def get_rules_settings():
 @app.post("/api/settings/rules")
 async def update_rules_settings(body: RulesConfigUpdate):
     errors = {}
-    for field in ("initial_attribute_points", "exp_threshold"):
+    for field in ("initial_attribute_points", "exp_threshold", "scene_turn_limit"):
         msg = _validate_range(field, getattr(body, field), RULES_FIELD_BOUNDS)
         if msg:
             errors[field] = msg
@@ -730,6 +741,9 @@ async def update_rules_settings(body: RulesConfigUpdate):
     if body.exp_threshold is not None:
         Config.EXP_THRESHOLD = int(body.exp_threshold)
         applied["exp_threshold"] = Config.EXP_THRESHOLD
+    if body.scene_turn_limit is not None:
+        Config.SCENE_TURN_LIMIT = int(body.scene_turn_limit)
+        applied["scene_turn_limit"] = Config.SCENE_TURN_LIMIT
 
     persisted = False
     if body.persist_to_env:
@@ -738,6 +752,8 @@ async def update_rules_settings(body: RulesConfigUpdate):
             env_updates["INITIAL_ATTRIBUTE_POINTS"] = str(int(body.initial_attribute_points))
         if body.exp_threshold is not None:
             env_updates["EXP_THRESHOLD"] = str(int(body.exp_threshold))
+        if body.scene_turn_limit is not None:
+            env_updates["SCENE_TURN_LIMIT"] = str(int(body.scene_turn_limit))
         try:
             upsert_env(ENV_PATH, env_updates)
             persisted = True

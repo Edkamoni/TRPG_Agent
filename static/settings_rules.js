@@ -6,6 +6,7 @@
   const els = {
     initialAttributePoints: () => document.getElementById("initial-attribute-points"),
     expThreshold: () => document.getElementById("exp-threshold"),
+    sceneTurnLimit: () => document.getElementById("scene-turn-limit"),
     resetBtn: () => document.getElementById("reset-btn"),
   };
 
@@ -18,6 +19,7 @@
     }
     els.initialAttributePoints().value = data.initial_attribute_points;
     els.expThreshold().value = data.exp_threshold;
+    els.sceneTurnLimit().value = data.scene_turn_limit;
     C.fillBoundsHint(data.bounds || {});
   }
 

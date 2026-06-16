@@ -29,6 +29,14 @@
     <span class="form-hint">升级所需经验值 = 该数值 × 当前等级。</span>
   </div>
 
+  <div class="form-row">
+    <label class="form-label" for="scene-turn-limit">
+      场景轮次限制 <span class="form-hint" id="scene-turn-limit-hint"></span>
+    </label>
+    <input class="form-input" type="number" id="scene-turn-limit" min="5" max="30" disabled>
+    <span class="form-hint">每个场景的最大对话轮数，达到后自动推进剧情。</span>
+  </div>
+
   <div class="settings-actions">
     <button class="btn btn-secondary" id="reset-btn" type="button">重新载入</button>
   </div>
