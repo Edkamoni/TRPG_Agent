@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from config import Config
-from schemas.game_action import GameAction
+from schemas.game_action import GameAction, SceneSummary
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,66 @@ class LLMClient:
             return structured_llm.invoke(converted)
 
         return _retry_with_backoff(_invoke)
+
+    def filter_relevant_summaries(
+        self,
+        current_scene: str,
+        summaries: List[SceneSummary],
+    ) -> List[SceneSummary]:
+        """
+        让 LLM 判断哪些历史场景摘要与当前场景相关。
+        返回相关摘要列表；LLM 调用失败时返回空列表（安全降级）。
+        """
+        if not summaries:
+            return []
+
+        summary_lines = "\n".join(
+            f"[{i}] {s.scene_name}: {s.summary}"
+            for i, s in enumerate(summaries)
+        )
+        prompt = (
+            f"当前场景：{current_scene}\n\n"
+            f"以下是从旧场景提取的摘要列表。请判断哪些摘要与当前场景可能相关"
+            f"（如 NPC、任务线索、物品）。\n"
+            f"只返回相关摘要的编号列表，格式：[0, 2]\n\n"
+            f"{summary_lines}"
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            result = self.chat_structured(
+                system_prompt="你是一个 TRPG 游戏助手，负责判断场景摘要的相关性。",
+                messages=messages,
+            )
+            # 尝试从 result 的 narrative 字段解析编号列表
+            text = result.narrative.strip()
+            # 匹配 [0, 2] 或 [0,2] 格式
+            if text.startswith("[") and text.endswith("]"):
+                import json
+                indices = json.loads(text)
+                if isinstance(indices, list):
+                    return [summaries[i] for i in indices if 0 <= i < len(summaries)]
+        except Exception as e:
+            logger.warning(f"filter_relevant_summaries LLM 调用失败，安全降级返回空列表: {e}")
+
+        # 第二次尝试：用普通 chat 解析纯文本回复
+        try:
+            text_result = ""
+            for chunk in self.chat_stream(
+                system_prompt="你是一个 TRPG 游戏助手，负责判断场景摘要的相关性。只返回编号列表，格式：[0, 2]",
+                messages=messages,
+            ):
+                text_result += chunk
+            text_result = text_result.strip()
+            if text_result.startswith("[") and text_result.endswith("]"):
+                import json
+                indices = json.loads(text_result)
+                if isinstance(indices, list):
+                    return [summaries[i] for i in indices if 0 <= i < len(summaries)]
+        except Exception as e:
+            logger.warning(f"filter_relevant_summaries 回退解析也失败: {e}")
+
+        return []
 
     # ---- _LEGACY: 向后兼容方法 ----
 

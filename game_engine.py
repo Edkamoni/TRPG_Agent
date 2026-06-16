@@ -28,6 +28,7 @@ class GameEngine:
         self._initialized = False
         self.pending_check: Optional[Dict] = None
         self._pending_exp: Optional[Tuple[int, bool]] = None
+        self.scene_turns: int = 0
 
     def _ensure_llm(self) -> LLMClient:
         if self.llm is None:
@@ -137,6 +138,7 @@ class GameEngine:
         self._initialized = False
         self.pending_check = None
         self._pending_exp = None
+        self.scene_turns = 0
         return c
 
     @property
@@ -163,6 +165,7 @@ class GameEngine:
         self._initialized = False
         self.pending_check = None
         self._pending_exp = None
+        self.scene_turns = 0
 
     def switch_world(self, world_id: str) -> str:
         """Switch world, keep character, clear conversation."""
@@ -177,14 +180,25 @@ class GameEngine:
         self._initialized = False
         self.pending_check = None
         self._pending_exp = None
+        self.scene_turns = 0
         return f"Switched to {self.world.world_name}"
 
     def _build_system_prompt(self) -> str:
         if self.world is None:
             return ""
         if not self.has_character:
-            return self.world.get_system_prompt(Character())
-        return self.world.get_system_prompt(self.character)
+            prompt = self.world.get_system_prompt(Character())
+        else:
+            prompt = self.world.get_system_prompt(self.character)
+        prompt += f"""
+【场景管理】
+- 每个场景大约持续 {Config.SCENE_TURN_LIMIT} 轮交互
+- 当前场景已进行 {self.scene_turns} 轮
+- 当场景自然收尾或达到轮次上限时，请在 narrative 中自然过渡，设置新的 scene 字段，并在 scene_summary 中提供本场景 100-200 字摘要
+- 摘要应包含：关键事件、重要 NPC 互动、获得的物品或线索
+- 不要突兀地切场，过渡要符合叙事逻辑
+"""
+        return prompt
 
     def _trim_messages(self) -> None:
         max_rounds = Config.MAX_HISTORY
