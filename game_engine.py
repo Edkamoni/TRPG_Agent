@@ -8,7 +8,7 @@ from config import Config
 from llm_client import LLMClient
 from rules.character import Character
 from rules.events import make_check_with_roll, CheckResult, ATTRIBUTE_CN
-from schemas.game_action import GameAction
+from schemas.game_action import GameAction, SceneSummary
 from storage import save_game, load_game
 from worlds import get_world, WORLD_REGISTRY
 from worlds.base import WorldBase
@@ -29,6 +29,9 @@ class GameEngine:
         self.pending_check: Optional[Dict] = None
         self._pending_exp: Optional[Tuple[int, bool]] = None
         self.scene_turns: int = 0
+        self.scene_start_idx: int = 0
+        self.scene_history: List[SceneSummary] = []
+        self._pending_summary_injection: bool = False
 
     def _ensure_llm(self) -> LLMClient:
         if self.llm is None:
@@ -139,6 +142,9 @@ class GameEngine:
         self.pending_check = None
         self._pending_exp = None
         self.scene_turns = 0
+        self.scene_start_idx = 0
+        self.scene_history = []
+        self._pending_summary_injection = False
         return c
 
     @property
@@ -166,6 +172,9 @@ class GameEngine:
         self.pending_check = None
         self._pending_exp = None
         self.scene_turns = 0
+        self.scene_start_idx = 0
+        self.scene_history = []
+        self._pending_summary_injection = False
 
     def switch_world(self, world_id: str) -> str:
         """Switch world, keep character, clear conversation."""
@@ -181,6 +190,9 @@ class GameEngine:
         self.pending_check = None
         self._pending_exp = None
         self.scene_turns = 0
+        self.scene_start_idx = 0
+        self.scene_history = []
+        self._pending_summary_injection = False
         return f"Switched to {self.world.world_name}"
 
     def _build_system_prompt(self) -> str:
@@ -193,17 +205,47 @@ class GameEngine:
         prompt += f"""
 【场景管理】
 - 每个场景大约持续 {Config.SCENE_TURN_LIMIT} 轮交互
-- 当前场景已进行 {self.scene_turns} 轮
+- 当前场景已进行 {self.scene_turns}/{Config.SCENE_TURN_LIMIT} 轮
 - 当场景自然收尾或达到轮次上限时，请在 narrative 中自然过渡，设置新的 scene 字段，并在 scene_summary 中提供本场景 100-200 字摘要
 - 摘要应包含：关键事件、重要 NPC 互动、获得的物品或线索
 - 不要突兀地切场，过渡要符合叙事逻辑
 """
+        if self.scene_turns >= Config.SCENE_TURN_LIMIT and self.scene_turns >= 3:
+            prompt += (
+                "\n⚠️ 当前场景已达到轮次上限，请在本次回复中完成场景收尾，"
+                "自然过渡到新场景，并务必填写 scene 和 scene_summary 字段。\n"
+            )
         return prompt
 
     def _trim_messages(self) -> None:
+        """场景感知的消息裁剪：保留当前场景完整消息，旧场景替换为摘要系统消息。"""
         max_rounds = Config.MAX_HISTORY
+
+        # 构建旧场景摘要消息
+        summary_msgs: List[Dict[str, str]] = []
+        if self.scene_start_idx > 0 and self.scene_history:
+            for s in self.scene_history:
+                summary_msgs.append({
+                    "role": "system",
+                    "content": f"[场景摘要: {s.scene_name}] {s.summary}",
+                })
+
+        # 保留当前场景消息
+        current_scene_msgs = self.messages[self.scene_start_idx:]
+
+        # 合并：摘要 + 当前场景
+        self.messages = summary_msgs + current_scene_msgs
+        self.scene_start_idx = len(summary_msgs)
+
+        # 安全兜底：如果当前场景消息过多，按 MAX_HISTORY 裁剪
         if len(self.messages) > max_rounds * 2:
-            self.messages = self.messages[-(max_rounds * 2):]
+            # 保留摘要消息 + 最近的当前场景消息
+            keep_from = len(self.messages) - (max_rounds * 2)
+            if keep_from > len(summary_msgs):
+                self.messages = summary_msgs + self.messages[keep_from:]
+            else:
+                self.messages = self.messages[-(max_rounds * 2):]
+            self.scene_start_idx = len(summary_msgs)
 
     def _init_game(self) -> None:
         if self._initialized:
@@ -223,6 +265,7 @@ class GameEngine:
         """
         Process user input and yield response chunks.
         流式输出纯文本 → 完成后 chat_structured() 获取 GameAction → 处理游戏效果。
+        包含场景回合追踪、摘要注入、场景切换检测。
         """
         if not self.has_character:
             yield "⚠️ Please create a character first!"
@@ -233,13 +276,31 @@ class GameEngine:
 
         self._init_game()
 
+        llm = self._ensure_llm()
+
+        # Step 1: 注入待处理的场景摘要（来自存档加载）
+        if self._pending_summary_injection:
+            current_scene = self.character.current_scene or ""
+            relevant = llm.filter_relevant_summaries(current_scene, self.scene_history)
+            for s in relevant:
+                self.messages.insert(self.scene_start_idx, {
+                    "role": "system",
+                    "content": f"[场景摘要: {s.scene_name}] {s.summary}",
+                })
+                self.scene_start_idx += 1
+            self._pending_summary_injection = False
+
+        # Step 2: 添加用户消息
         self.messages.append({"role": "user", "content": user_input})
         self._trim_messages()
 
-        llm = self._ensure_llm()
+        # Step 3: 场景回合计数
+        self.scene_turns += 1
+
+        # Step 4: 构建系统提示词（含场景回合信息 + 强制收尾指令）
         system_prompt = self._build_system_prompt()
 
-        # 阶段 1：流式输出纯文本
+        # Step 5: 流式输出纯文本
         full_response = ""
         try:
             for chunk in llm.chat_stream(system_prompt, self.messages):
@@ -250,7 +311,7 @@ class GameEngine:
             yield error_msg
             full_response += error_msg
 
-        # 阶段 2：结构化解析，获取 GameAction
+        # Step 6: 结构化解析，获取 GameAction
         try:
             action = llm.chat_structured(system_prompt, self.messages)
         except Exception as e:
@@ -258,12 +319,35 @@ class GameEngine:
             # 回退：创建仅含 narrative 的 GameAction
             action = GameAction(narrative=full_response)
 
-        # 存入 messages 的是干净的 narrative（不含标签）
+        # Step 7: 存入 messages 的是干净的 narrative（不含标签）
         self.messages.append({"role": "assistant", "content": action.narrative})
+
+        # Step 8: 记录旧场景名（处理前），再处理 AI 输出
+        old_scene = self.character.current_scene if self.has_character else ""
+
         self._process_ai_output(action)
         self.last_game_action = action
         self.last_quick_actions = action.quick_actions
         self._pending_exp = self.hidden_exp_gain()
+
+        # Step 9: 检测场景切换
+        new_scene = action.scene.strip() if action.scene else ""
+        scene_changed = (
+            (bool(new_scene) and new_scene != old_scene)
+            or self.scene_turns >= Config.SCENE_TURN_LIMIT
+        )
+
+        if scene_changed and self.scene_turns >= 3:
+            summary_text = (action.scene_summary or "").strip()
+            scene_name = new_scene or old_scene or "未知场景"
+            summary = SceneSummary(
+                scene_name=scene_name,
+                summary=summary_text,
+                ended_at_turn=self.scene_turns,
+            )
+            self.scene_history.append(summary)
+            self.scene_turns = 0
+            self.scene_start_idx = len(self.messages)
 
     def _update_scene(self, text: str) -> None:
         """Extract scene description from AI output and update character.current_scene."""
@@ -308,7 +392,7 @@ class GameEngine:
         if not self.has_character:
             raise ValueError("No character to save")
         wid = self.world_id or "dnd"
-        return save_game(self.character, wid, self.messages)
+        return save_game(self.character, wid, self.messages, self.scene_history)
 
     def load(self, filepath: str) -> str:
         """Load game from file. Returns status message."""
@@ -321,4 +405,13 @@ class GameEngine:
         self._initialized = True
         self.pending_check = None
         self._pending_exp = None
+        self.scene_turns = 0
+        self.scene_start_idx = len(self.messages)
+        # 恢复场景摘要历史
+        raw_summaries = data.get("scene_summaries", [])
+        self.scene_history = [
+            SceneSummary(**s) if isinstance(s, dict) else s
+            for s in raw_summaries
+        ]
+        self._pending_summary_injection = bool(self.scene_history)
         return f"Loaded: {self.character.name} (Lv.{self.character.level}) in {self.world.world_name}"
