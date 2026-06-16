@@ -8,6 +8,7 @@ from typing import List, Optional, Dict, Any
 
 from config import Config
 from rules.character import Character
+from schemas.game_action import SceneSummary
 
 
 def _ensure_save_dir() -> None:
@@ -18,6 +19,7 @@ def save_game(
     character: Character,
     world_id: str,
     messages: List[Dict[str, str]],
+    scene_summaries: Optional[List[SceneSummary]] = None,
 ) -> str:
     """Save game state to JSON file. Returns file path."""
     _ensure_save_dir()
@@ -33,6 +35,9 @@ def save_game(
         "saved_at": datetime.now().isoformat(),
     }
 
+    if scene_summaries is not None:
+        data["scene_summaries"] = [s.model_dump() for s in scene_summaries]
+
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -40,11 +45,12 @@ def save_game(
 
 
 def load_game(filepath: str) -> Dict[str, Any]:
-    """Load game state from JSON file. Returns dict with character, world_id, messages."""
+    """Load game state from JSON file. Returns dict with character, world_id, messages, scene_summaries."""
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     data["character"] = Character.from_dict(data["character"])
+    data["scene_summaries"] = data.get("scene_summaries", [])
     return data
 
 
