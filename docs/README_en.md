@@ -21,6 +21,7 @@ The entry point is `TRPG_Agent/main.py`. Run `python main.py` in the project dir
 - Supports character creation, attribute allocation, XP, and leveling
 - Supports local JSON save/load (legacy tag-format saves remain compatible)
 - Model and rule settings pages with live `.env` hot-write
+- Scene-level lifecycle management: once `SCENE_TURN_LIMIT` is hit, the AI emits a ≤200-character summary in its structured output, prior-scene context is compressed into a single system message to bound token usage, and relevant summaries are re-injected on save load
 
 ## Tech Stack
 
@@ -69,6 +70,7 @@ Main streaming endpoint: `POST /api/chat/stream`, returning `text/event-stream`.
 | `check_request` | Notifies the frontend to open the dice prompt when a check is triggered |
 | `check` | Resolved dice check result (attribute, DC, roll value, success flag) |
 | `actions` | Quick action buttons for the current turn (up to 4) |
+| `scene_change` | Scene transition notification with payload `{scene, summary}` |
 | `done` | Stream finished normally |
 | `error` | Stream aborted with an error payload |
 
@@ -94,7 +96,10 @@ class GameAction(BaseModel):
     breakthrough: Optional[str] = None          # Breakthrough attribute (CNC only)
     quick_actions: List[str] = []               # Suggested quick actions
     scene: Optional[str] = None                 # Current scene description
+    scene_summary: Optional[str] = None         # ≤200-char summary emitted by the AI when a scene ends; None otherwise
 ```
+
+Scene lifecycle: each `process_input()` call increments `scene_turns`. When `action.scene` differs from the character's current scene and `scene_turns >= 3`, the engine treats it as a scene transition: the old scene's messages are compressed into a single `[场景摘要: ...]` system message and archived into `scene_history` (a `SceneSummary` list). Once `SCENE_TURN_LIMIT` (default 10) is reached, the system prompt appends a forced wrap-up instruction asking the AI to emit a `scene_summary` on the next turn. After loading a save, the next user input triggers `filter_relevant_summaries()` to selectively re-inject relevant prior summaries.
 
 The flow is: stream `narrative` text through SSE → after streaming finishes, run a structured parse to obtain the full `GameAction` → trigger the corresponding game mechanics (checks, XP gain, refreshing quick action buttons, etc.).
 
@@ -159,6 +164,7 @@ Configuration is loaded from `.env` and `config.py`. `ZHIPU_API_KEY` is required
 | `MAX_RETRIES` | `3` | API retry count |
 | `STREAM_TIMEOUT` | `60` | Streaming response timeout in seconds |
 | `EXP_THRESHOLD` | `100` | Base XP threshold for leveling |
+| `SCENE_TURN_LIMIT` | `10` | Soft cap on turns per scene (range 5-30; out-of-range values fall back to 10) |
 
 The settings pages allow live edits and can optionally persist them to `.env` via `env_writer.upsert_env()` (preserving original line order and comments). After changing `MODEL_NAME` or `ZHIPU_API_KEY`, the `LLMClient` is rebuilt on the next chat call.
 
@@ -180,6 +186,7 @@ TRPG_Agent/
 ├── templates/           # Jinja2 HTML templates
 ├── static/              # CSS + JS
 ├── saves/               # JSON saves
+├── scripts/             # Helper scripts (includes `verify_scene_features.py` for end-to-end scene feature verification)
 ├── docs/                # Multilingual READMEs + roadmaps
 ├── requirements.txt
 └── .env.example

@@ -21,6 +21,7 @@ LLM 呼叫層使用 **LangChain** 的 `ChatOpenAI`,透過智譜 AI 的 OpenAI �
 - 支援角色建立、屬性分配、經驗和升級
 - 支援 JSON 本地存檔讀取與保存(相容舊版標籤格式存檔)
 - 提供模型設定和規則設定頁面,可線上熱改 `.env`
+- 場景級生命週期管理:達到 `SCENE_TURN_LIMIT` 後由 AI 在結構化輸出中提供 ≤200 字摘要,舊場景上下文會被壓縮為單條系統訊息以控制 token 佔用,讀檔時依相關性回填摘要
 
 ## 技術棧
 
@@ -69,6 +70,7 @@ ZHIPU_API_KEY=你的智譜 API Key
 | `check_request` | 觸發檢定時通知前端彈出骰子介面 |
 | `check` | 已解決的骰子檢定結果(屬性、DC、骰值、成功與否) |
 | `actions` | 當前回合的快捷行動按鈕(最多 4 個) |
+| `scene_change` | 場景切換通知,負載為 `{scene, summary}` |
 | `done` | 串流正常結束 |
 | `error` | 串流異常中止,負載中包含錯誤訊息 |
 
@@ -94,7 +96,10 @@ class GameAction(BaseModel):
     breakthrough: Optional[str] = None          # 突破屬性(僅 CNC)
     quick_actions: List[str] = []               # 快捷行動建議
     scene: Optional[str] = None                 # 當前場景描述
+    scene_summary: Optional[str] = None         # 場景結束時由 AI 提供的 ≤200 字摘要,平時為 None
 ```
+
+場景生命週期:每次 `process_input()` 遞增 `scene_turns`;當 `action.scene` 與角色當前場景不一致且 `scene_turns >= 3` 時即視為場景切換,舊場景訊息會被壓縮為單條 `[场景摘要: ...]` 系統訊息並歸檔到 `scene_history`(`SceneSummary` 清單)。達到 `SCENE_TURN_LIMIT`(預設 10)時系統提示詞會追加強制收尾指令,要求 AI 在下一輪透過 `scene_summary` 欄位輸出摘要。讀檔後下一次輸入會觸發 `filter_relevant_summaries()` 選擇性回填相關摘要。
 
 流程為:串流輸出 `narrative` 文字到 SSE → 串流結束後呼叫一次結構化解析以取得完整 `GameAction` → 觸發對應的遊戲機制(檢定、加經驗、刷新快捷按鈕等)。
 
@@ -159,6 +164,7 @@ CNC 是偏輕鬆、吐槽風格的國產奇幻世界觀。AI 透過 `GameAction.
 | `MAX_RETRIES` | `3` | API 呼叫重試次數 |
 | `STREAM_TIMEOUT` | `60` | 串流回應逾時(秒) |
 | `EXP_THRESHOLD` | `100` | 升級經驗閾值基數 |
+| `SCENE_TURN_LIMIT` | `10` | 場景輪次軟上限(範圍 5-30,超出範圍會回退到 10) |
 
 設定頁支援執行時熱改並可勾選「同時寫入 `.env`」,由 `env_writer.upsert_env()` 持久化(保留原檔案行序與註解)。修改 `MODEL_NAME` 或 `ZHIPU_API_KEY` 後,下一次聊天會自動重建 `LLMClient` 實例。
 
@@ -180,6 +186,7 @@ TRPG_Agent/
 ├── templates/           # Jinja2 HTML 模板
 ├── static/              # CSS + JS
 ├── saves/               # JSON 存檔
+├── scripts/             # 輔助指令稿(含 `verify_scene_features.py` 場景特性 E2E 驗證)
 ├── docs/                # 多語言 README + 路線圖
 ├── requirements.txt
 └── .env.example

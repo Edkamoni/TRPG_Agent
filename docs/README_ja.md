@@ -21,6 +21,7 @@ LLM 呼び出し層には **LangChain** の `ChatOpenAI` を使用し、智譜 A
 - キャラクター作成、属性配分、経験値、レベルアップに対応
 - JSON 形式のローカルセーブとロードに対応(旧バージョンのタグ形式セーブとも互換)
 - モデル設定ページとルール設定ページを提供し、`.env` をホットリロードで書き換え可能
+- シーン単位のライフサイクル管理:`SCENE_TURN_LIMIT` に達すると AI が構造化出力で 200 文字以内のシーン要約を生成し、旧シーンのコンテキストは単一のシステムメッセージへ圧縮されてトークン消費を抑制。セーブのロード時には関連性に応じて要約を再注入
 
 ## 技術スタック
 
@@ -69,6 +70,7 @@ ZHIPU_API_KEY=your Zhipu API key
 | `check_request` | 判定が発生した際にフロントへダイス入力 UI を表示するよう通知 |
 | `check` | 解決済みのダイス判定結果(属性、DC、出目、成否) |
 | `actions` | 現ターンのクイックアクションボタン(最大 4 個) |
+| `scene_change` | シーン遷移通知。ペイロードは `{scene, summary}` |
 | `done` | ストリーム正常終了 |
 | `error` | ストリーム異常終了、ペイロードにエラー情報を含む |
 
@@ -94,7 +96,10 @@ class GameAction(BaseModel):
     breakthrough: Optional[str] = None          # ブレイクスルー属性(CNC のみ)
     quick_actions: List[str] = []               # クイックアクションの提案
     scene: Optional[str] = None                 # 現在のシーン描写
+    scene_summary: Optional[str] = None         # シーン終了時に AI が出力する 200 文字以内の要約。通常は None
 ```
+
+シーンライフサイクル:`process_input()` ごとに `scene_turns` をインクリメントし、`action.scene` がキャラクターの現在シーンと異なり、かつ `scene_turns >= 3` の場合にシーン遷移とみなす。旧シーンのメッセージは単一の `[场景摘要: ...]` システムメッセージへ圧縮され、`scene_history`(`SceneSummary` リスト)へアーカイブされる。`SCENE_TURN_LIMIT`(既定値 10)に到達すると、システムプロンプトに強制締めくくり指示が付与され、次ターンで AI に `scene_summary` フィールドの出力を要求する。セーブをロードすると、次のユーザー入力時に `filter_relevant_summaries()` が呼び出され、関連する過去要約が選択的に再注入される。
 
 流れ:`narrative` テキストを SSE でストリーミング → ストリーム終了後に一度だけ構造化解析を実行して完全な `GameAction` を取得 → 対応するゲーム機構(判定、経験値付与、クイックボタン更新など)をトリガー。
 
@@ -159,6 +164,7 @@ CNC は軽快でツッコミ調の中国ファンタジー世界観です。AI �
 | `MAX_RETRIES` | `3` | API 呼び出しのリトライ回数 |
 | `STREAM_TIMEOUT` | `60` | ストリーミング応答タイムアウト(秒) |
 | `EXP_THRESHOLD` | `100` | レベルアップ経験値しきい値の基数 |
+| `SCENE_TURN_LIMIT` | `10` | シーン当たりのターン数ソフト上限(範囲 5-30、範囲外は 10 にフォールバック) |
 
 設定ページではランタイムでの編集に加え、「`.env` にも書き込む」をオンにすると `env_writer.upsert_env()` を介して永続化できます(元のファイルの行順とコメントは保持されます)。`MODEL_NAME` や `ZHIPU_API_KEY` を変更すると、次回のチャット時に `LLMClient` インスタンスが自動的に再構築されます。
 
@@ -180,6 +186,7 @@ TRPG_Agent/
 ├── templates/           # Jinja2 HTML テンプレート
 ├── static/              # CSS + JS
 ├── saves/               # JSON セーブデータ
+├── scripts/             # 補助スクリプト(`verify_scene_features.py` によるシーン機能の E2E 検証を含む)
 ├── docs/                # 多言語 README + ロードマップ
 ├── requirements.txt
 └── .env.example
